@@ -18,12 +18,14 @@ package main
 
 import (
 	"context"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"github.com/mailgun/gubernator"
@@ -112,6 +114,10 @@ func main() {
 	// Serve the JSON Gateway and metrics handlers via standard HTTP/1
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	mux.Handle("/", gateway)
 	httpSrv := &http.Server{Addr: conf.GRPCListenAddress, Handler: mux}
 
