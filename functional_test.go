@@ -270,7 +270,7 @@ func TestMissingFields(t *testing.T) {
 }
 
 func TestGlobalRateLimits(t *testing.T) {
-	peer := cluster.PeerAt(0)
+	peer := cluster.PeerAt(1)
 	client, errs := guber.DialV1Server(peer)
 	require.Nil(t, errs)
 
@@ -314,7 +314,7 @@ func TestGlobalRateLimits(t *testing.T) {
 	sendHit(guber.Status_UNDER_LIMIT, 3, 3)
 
 	// Inspect our metrics, ensure they collected the counts we expected during this test
-	instance := cluster.InstanceAt(0)
+	instance := cluster.InstanceAt(1)
 	metricCh := make(chan prometheus.Metric, 5)
 	instance.Guber.Collect(metricCh)
 
@@ -323,8 +323,8 @@ func TestGlobalRateLimits(t *testing.T) {
 	assert.Nil(t, m.Write(&buf))
 	assert.Equal(t, uint64(1), *buf.Histogram.SampleCount)
 
-	// Instance 3 should be the owner of our global rate limit
-	instance = cluster.InstanceAt(3)
+	// Instance 2 should be the owner of our global rate limit
+	instance = cluster.InstanceAt(2)
 	metricCh = make(chan prometheus.Metric, 5)
 	instance.Guber.Collect(metricCh)
 
