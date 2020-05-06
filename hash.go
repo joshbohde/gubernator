@@ -17,27 +17,42 @@ limitations under the License.
 package gubernator
 
 import (
-	"hash/crc32"
+	"hash/fnv"
 	"sort"
+	"strconv"
 
 	"github.com/pkg/errors"
 )
 
+const DefaultReplicas = 512
+
 type HashFunc func(data []byte) uint32
+
+func DefaultHash(data []byte) uint32 {
+	h := fnv.New32a()
+	h.Write(data)
+	return h.Sum32()
+}
 
 // Implements PeerPicker
 type ConsistantHash struct {
 	hashFunc HashFunc
-	peerKeys []*PeerClient
+	peerKeys []int
+	peerMap  map[int]*PeerClient
+	peers    map[string]*PeerClient
+	replicas int
 }
 
 func NewConsistantHash(fn HashFunc) *ConsistantHash {
 	ch := &ConsistantHash{
 		hashFunc: fn,
+		peerMap:  make(map[int]*PeerClient),
+		peers:    make(map[string]*PeerClient),
+		replicas: DefaultReplicas,
 	}
 
 	if ch.hashFunc == nil {
-		ch.hashFunc = crc32.ChecksumIEEE
+		ch.hashFunc = DefaultHash
 	}
 	return ch
 }
@@ -45,19 +60,31 @@ func NewConsistantHash(fn HashFunc) *ConsistantHash {
 func (ch *ConsistantHash) New() PeerPicker {
 	return &ConsistantHash{
 		hashFunc: ch.hashFunc,
+		peerMap:  make(map[int]*PeerClient),
+		peers:    make(map[string]*PeerClient),
+		replicas: ch.replicas,
 	}
 }
 
 func (ch *ConsistantHash) Peers() []*PeerClient {
-	return ch.peerKeys
+	var results []*PeerClient
+	for _, v := range ch.peers {
+		results = append(results, v)
+	}
+	return results
 }
 
 // Adds a peer to the hash
 func (ch *ConsistantHash) Add(peer *PeerClient) {
-	ch.peerKeys = append(ch.peerKeys, peer)
-	sort.SliceStable(ch.peerKeys, func(i, j int) bool {
-		return ch.hashFunc([]byte(ch.peerKeys[i].host)) < ch.hashFunc([]byte(ch.peerKeys[j].host))
-	})
+	ch.peers[peer.host] = peer
+
+	for i := 0; i < ch.replicas; i++ {
+		hash := int(ch.hashFunc([]byte(strconv.Itoa(i) + peer.host)))
+		ch.peerKeys = append(ch.peerKeys, hash)
+		ch.peerMap[hash] = peer
+	}
+
+	sort.Ints(ch.peerKeys)
 }
 
 // Returns number of peers in the picker
@@ -67,12 +94,7 @@ func (ch *ConsistantHash) Size() int {
 
 // Returns the peer by hostname
 func (ch *ConsistantHash) GetPeerByHost(host string) *PeerClient {
-	for _, p := range ch.peerKeys {
-		if p.host == host {
-			return p
-		}
-	}
-	return nil
+	return ch.peerMap[int(ch.hashFunc([]byte(host)))]
 }
 
 // Given a key, return the peer that key is assigned too
@@ -83,7 +105,13 @@ func (ch *ConsistantHash) Get(key string) (*PeerClient, error) {
 
 	hash := int(ch.hashFunc([]byte(key)))
 
-	idx := hash % len(ch.peerKeys)
+	// Binary search for appropriate peer
+	idx := sort.Search(len(ch.peerKeys), func(i int) bool { return ch.peerKeys[i] >= hash })
 
-	return ch.peerKeys[idx], nil
+	// Means we have cycled back to the first peer
+	if idx == len(ch.peerKeys) {
+		idx = 0
+	}
+
+	return ch.peerMap[ch.peerKeys[idx]], nil
 }

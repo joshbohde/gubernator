@@ -8,7 +8,7 @@ import (
 )
 
 func TestConsistantHash(t *testing.T) {
-	const cases = 1024
+	const cases = 2048
 	rand.Seed(time.Now().Unix())
 
 	hash := NewConsistantHash(nil)
@@ -28,20 +28,9 @@ func TestConsistantHash(t *testing.T) {
 		hostMap[peer.host]++
 	}
 
-	max := 0
-	for _, a := range hostMap {
-		for _, b := range hostMap {
-			diff := b - a
-			if diff < 0 {
-				diff = diff * -1
-			}
-			if diff > max {
-				max = diff
-			}
-		}
+	for host, a := range hostMap {
+		t.Logf("host: %s, percent: %f", host, float64(a)/cases)
 	}
-
-	t.Log("% difference", float64(max)/cases)
 }
 
 func BenchmarkConsistantHash(b *testing.B) {

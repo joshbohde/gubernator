@@ -299,6 +299,7 @@ func TestGlobalRateLimits(t *testing.T) {
 		// name/key should ensure our connected peer is NOT the owner,
 		// the peer we are connected to should forward requests asynchronously to the owner.
 		assert.NotEqual(t, peer, resp.Responses[0].Metadata["owner"])
+		t.Log(resp.Responses[0].Metadata["owner"])
 	}
 
 	// Our first hit should create the request on the peer and queue for async forward
@@ -324,7 +325,7 @@ func TestGlobalRateLimits(t *testing.T) {
 	assert.Equal(t, uint64(1), *buf.Histogram.SampleCount)
 
 	// Instance 2 should be the owner of our global rate limit
-	instance = cluster.InstanceAt(2)
+	instance = cluster.InstanceAt(3)
 	metricCh = make(chan prometheus.Metric, 5)
 	instance.Guber.Collect(metricCh)
 
