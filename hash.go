@@ -17,9 +17,10 @@ limitations under the License.
 package gubernator
 
 import (
-	"github.com/pkg/errors"
 	"hash/crc32"
 	"sort"
+
+	"github.com/pkg/errors"
 )
 
 type HashFunc func(data []byte) uint32
@@ -27,14 +28,12 @@ type HashFunc func(data []byte) uint32
 // Implements PeerPicker
 type ConsistantHash struct {
 	hashFunc HashFunc
-	peerKeys []int
-	peerMap  map[int]*PeerClient
+	peerKeys []*PeerClient
 }
 
 func NewConsistantHash(fn HashFunc) *ConsistantHash {
 	ch := &ConsistantHash{
 		hashFunc: fn,
-		peerMap:  make(map[int]*PeerClient),
 	}
 
 	if ch.hashFunc == nil {
@@ -46,24 +45,19 @@ func NewConsistantHash(fn HashFunc) *ConsistantHash {
 func (ch *ConsistantHash) New() PeerPicker {
 	return &ConsistantHash{
 		hashFunc: ch.hashFunc,
-		peerMap:  make(map[int]*PeerClient),
 	}
 }
 
 func (ch *ConsistantHash) Peers() []*PeerClient {
-	var results []*PeerClient
-	for _, v := range ch.peerMap {
-		results = append(results, v)
-	}
-	return results
+	return ch.peerKeys
 }
 
 // Adds a peer to the hash
 func (ch *ConsistantHash) Add(peer *PeerClient) {
-	hash := int(ch.hashFunc([]byte(peer.host)))
-	ch.peerKeys = append(ch.peerKeys, hash)
-	ch.peerMap[hash] = peer
-	sort.Ints(ch.peerKeys)
+	ch.peerKeys = append(ch.peerKeys, peer)
+	sort.SliceStable(ch.peerKeys, func(i, j int) bool {
+		return ch.hashFunc([]byte(ch.peerKeys[i].host)) < ch.hashFunc([]byte(ch.peerKeys[j].host))
+	})
 }
 
 // Returns number of peers in the picker
@@ -73,7 +67,12 @@ func (ch *ConsistantHash) Size() int {
 
 // Returns the peer by hostname
 func (ch *ConsistantHash) GetPeerByHost(host string) *PeerClient {
-	return ch.peerMap[int(ch.hashFunc([]byte(host)))]
+	for _, p := range ch.peerKeys {
+		if p.host == host {
+			return p
+		}
+	}
+	return nil
 }
 
 // Given a key, return the peer that key is assigned too
@@ -84,13 +83,7 @@ func (ch *ConsistantHash) Get(key string) (*PeerClient, error) {
 
 	hash := int(ch.hashFunc([]byte(key)))
 
-	// Binary search for appropriate peer
-	idx := sort.Search(len(ch.peerKeys), func(i int) bool { return ch.peerKeys[i] >= hash })
+	idx := hash % len(ch.peerKeys)
 
-	// Means we have cycled back to the first peer
-	if idx == len(ch.peerKeys) {
-		idx = 0
-	}
-
-	return ch.peerMap[ch.peerKeys[idx]], nil
+	return ch.peerKeys[idx], nil
 }
