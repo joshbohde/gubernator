@@ -122,7 +122,12 @@ func (s *Instance) GetRateLimits(ctx context.Context, r *GetRateLimitsReq) (*Get
 	// Asynchronously fetch rate limits
 	out := make(chan InOut)
 	go func() {
-		fan := syncutil.NewFanOut(1000)
+		fanOut := len(r.Requests)
+		if fanOut > 1000 {
+			fanOut = 1000
+		}
+
+		fan := syncutil.NewFanOut(fanOut)
 		// For each item in the request body
 		for i, item := range r.Requests {
 			fan.Run(func(data interface{}) error {
