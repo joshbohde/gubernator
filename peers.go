@@ -196,20 +196,17 @@ func (c *PeerClient) run() {
 
 			// Send the queue if we reached our batch limit
 			if len(queue) == c.conf.BatchLimit {
-				c.sendQueue(queue)
+				go c.sendQueue(queue)
 				queue = nil
 				continue
 			}
 
-			// If this is our first queued item since last send
 			// queue the next interval
-			if len(queue) == 1 {
-				interval.Next()
-			}
+			interval.Next()
 
 		case <-interval.C:
 			if len(queue) != 0 {
-				c.sendQueue(queue)
+				go c.sendQueue(queue)
 				queue = nil
 			}
 
