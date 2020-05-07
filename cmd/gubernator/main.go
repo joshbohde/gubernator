@@ -20,6 +20,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 
@@ -109,7 +110,7 @@ func main() {
 	checkErr(err, "while registering GRPC gateway handler")
 
 	// Serve the JSON Gateway and metrics handlers via standard HTTP/1
-	mux := http.NewServeMux()
+	mux := http.DefaultServeMux
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.Handle("/", gateway)
 	httpSrv := &http.Server{Addr: conf.GRPCListenAddress, Handler: mux}
