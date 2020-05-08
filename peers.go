@@ -217,9 +217,12 @@ func (c *PeerClient) run() {
 // sendQueue sends the queue provided and returns the responses to
 // waiting go routines
 func (c *PeerClient) sendQueue(queue []*request) {
-	var req GetPeerRateLimitsReq
-	for _, r := range queue {
-		req.Requests = append(req.Requests, r.request)
+	req := GetPeerRateLimitsReq{
+		Requests: make([]*RateLimitReq, len(queue)),
+	}
+
+	for i := range queue {
+		req.Requests[i] = queue[i].request
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.conf.BatchTimeout)

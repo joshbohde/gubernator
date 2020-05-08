@@ -268,20 +268,22 @@ func (s *Instance) UpdatePeerGlobals(ctx context.Context, r *UpdatePeerGlobalsRe
 
 // GetPeerRateLimits is called by other peers to get the rate limits owned by this peer.
 func (s *Instance) GetPeerRateLimits(ctx context.Context, r *GetPeerRateLimitsReq) (*GetPeerRateLimitsResp, error) {
-	var resp GetPeerRateLimitsResp
+	resp := GetPeerRateLimitsResp{
+		RateLimits: make([]*RateLimitResp, len(r.Requests)),
+	}
 
 	if len(r.Requests) > maxBatchSize {
 		return nil, status.Errorf(codes.OutOfRange,
 			"'PeerRequest.rate_limits' list too large; max size is '%d'", maxBatchSize)
 	}
 
-	for _, req := range r.Requests {
+	for i, req := range r.Requests {
 		rl, err := s.getRateLimit(req)
 		if err != nil {
 			// Return the error for this request
 			rl = &RateLimitResp{Error: err.Error()}
 		}
-		resp.RateLimits = append(resp.RateLimits, rl)
+		resp.RateLimits[i] = rl
 	}
 	return &resp, nil
 }
