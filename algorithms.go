@@ -22,7 +22,8 @@ import (
 
 // Implements token bucket algorithm for rate limiting. https://en.wikipedia.org/wiki/Token_bucket
 func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err error) {
-	item, ok := c.GetItem(r.HashKey())
+	key := r.HashKey()
+	item, ok := c.GetItem(key)
 	if s != nil {
 		if !ok {
 			// Check our store for the item
@@ -34,9 +35,9 @@ func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 
 	if ok {
 		if HasBehavior(r.Behavior, Behavior_RESET_REMAINING) {
-			c.Remove(r.HashKey())
+			c.Remove(key)
 			if s != nil {
-				s.Remove(r.HashKey())
+				s.Remove(key)
 			}
 			return &RateLimitResp{
 				Status:    Status_UNDER_LIMIT,
@@ -54,9 +55,9 @@ func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 		t, ok := item.Value.(*TokenBucketItem)
 		if !ok {
 			// Client switched algorithms; perhaps due to a migration?
-			c.Remove(r.HashKey())
+			c.Remove(key)
 			if s != nil {
-				s.Remove(r.HashKey())
+				s.Remove(key)
 			}
 			return tokenBucket(s, c, r)
 		}
@@ -166,7 +167,7 @@ func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 
 	item = &CacheItem{
 		Algorithm: r.Algorithm,
-		Key:       r.HashKey(),
+		Key:       key,
 		Value:     t,
 		ExpireAt:  expire,
 	}
@@ -181,7 +182,8 @@ func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 // Implements leaky bucket algorithm for rate limiting https://en.wikipedia.org/wiki/Leaky_bucket
 func leakyBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err error) {
 	now := MillisecondNow()
-	item, ok := c.GetItem(r.HashKey())
+	key := r.HashKey()
+	item, ok := c.GetItem(key)
 	if s != nil {
 		if !ok {
 			// Check our store for the item
@@ -195,9 +197,9 @@ func leakyBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 		b, ok := item.Value.(*LeakyBucketItem)
 		if !ok {
 			// Client switched algorithms; perhaps due to a migration?
-			c.Remove(r.HashKey())
+			c.Remove(key)
 			if s != nil {
-				s.Remove(r.HashKey())
+				s.Remove(key)
 			}
 			return leakyBucket(s, c, r)
 		}
@@ -284,7 +286,7 @@ func leakyBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 
 		b.Remaining -= r.Hits
 		rl.Remaining = b.Remaining
-		c.UpdateExpiration(r.HashKey(), now*duration)
+		c.UpdateExpiration(key, now*duration)
 		return rl, nil
 	}
 
@@ -325,7 +327,7 @@ func leakyBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 	item = &CacheItem{
 		ExpireAt:  now + duration,
 		Algorithm: r.Algorithm,
-		Key:       r.HashKey(),
+		Key:       key,
 		Value:     &b,
 	}
 	c.Add(item)
