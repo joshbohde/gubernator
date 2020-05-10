@@ -198,11 +198,13 @@ func (c *PeerClient) run() {
 			if len(queue) == c.conf.BatchLimit {
 				go c.sendQueue(queue)
 				queue = nil
+				interval.Reset()
 				continue
 			}
 
-			// queue the next interval
-			interval.Next()
+			if len(queue) == 1 {
+				interval.Next()
+			}
 
 		case <-interval.C:
 			if len(queue) != 0 {

@@ -18,6 +18,7 @@ package gubernator
 
 import (
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/mailgun/holster/v3/syncutil"
@@ -27,6 +28,9 @@ type Interval struct {
 	C  chan struct{}
 	in chan struct{}
 	wg syncutil.WaitGroup
+
+	mu        sync.Mutex
+	lastReset time.Time
 }
 
 // NewInterval creates a new ticker like object, however
@@ -36,17 +40,36 @@ type Interval struct {
 func NewInterval(d time.Duration) *Interval {
 	i := Interval{
 		C:  make(chan struct{}, 1),
-		in: make(chan struct{}),
+		in: make(chan struct{}, 1),
 	}
 	go i.run(d)
 	return &i
+}
+
+func (i *Interval) sleepUntilTime(d time.Duration) {
+	toSleep := d
+
+	for {
+		time.Sleep(toSleep)
+
+		i.mu.Lock()
+
+		if i.lastReset.IsZero() {
+			i.mu.Unlock()
+			return
+		}
+
+		toSleep = d - time.Since(i.lastReset)
+		i.lastReset = time.Time{}
+		i.mu.Unlock()
+	}
 }
 
 func (i *Interval) run(d time.Duration) {
 	i.wg.Until(func(done chan struct{}) bool {
 		select {
 		case <-i.in:
-			time.Sleep(d)
+			i.sleepUntilTime(d)
 			i.C <- struct{}{}
 			return true
 		case <-done:
@@ -57,6 +80,14 @@ func (i *Interval) run(d time.Duration) {
 
 func (i *Interval) Stop() {
 	i.wg.Stop()
+}
+
+// Reset signals that the interval this was tracking was externally reset.
+// It will skip the current signal, and instead signal duration from now.
+func (i *Interval) Reset() {
+	i.mu.Lock()
+	i.lastReset = time.Now()
+	i.mu.Unlock()
 }
 
 // Next queues the next interval to run, If multiple calls to Next() are
