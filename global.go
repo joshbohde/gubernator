@@ -196,12 +196,13 @@ func (gm *globalManager) updatePeers(updates map[string]*RateLimitReq) {
 	start := time.Now()
 
 	for _, rl := range updates {
+		rl := *rl
 		// We are only sending the status of the rate limit so
 		// we clear the behavior flag so we don't get queued for update again.
 		SetBehavior(&rl.Behavior, Behavior_GLOBAL, false)
 		rl.Hits = 0
 
-		status, err := gm.instance.getRateLimit(rl)
+		status, err := gm.instance.getRateLimit(&rl)
 		if err != nil {
 			gm.log.WithError(err).Errorf("while sending global updates to peers for: '%s'", rl.HashKey())
 			continue
