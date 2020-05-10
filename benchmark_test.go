@@ -18,6 +18,8 @@ package gubernator_test
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	guber "github.com/mailgun/gubernator"
@@ -135,4 +137,53 @@ func BenchmarkServer_ThunderingHeard(b *testing.B) {
 			}, nil)
 		}
 	})
+}
+
+func BenchmarkServer_Saturate(b *testing.B) {
+	client := cluster.InstanceAt(0).Guber
+
+	cs := []int{1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024}
+
+	strings := make([]string, 1000)
+	for i := range strings {
+		strings[i] = fmt.Sprintf("%d %s", i, guber.RandomString(10))
+	}
+
+	ctx := context.Background()
+
+	for _, c := range cs {
+		c := c
+		caseName := fmt.Sprintf("%d", c)
+
+		b.Run(caseName, func(b *testing.B) {
+			wg := sync.WaitGroup{}
+			wg.Add(c)
+
+			for i := 0; i < c; i++ {
+
+				go func() {
+					for n := 0; n < (b.N / c); n++ {
+						_, err := client.GetRateLimits(ctx, &guber.GetRateLimitsReq{
+							Requests: []*guber.RateLimitReq{
+								{
+									Name:      "get_rate_limit_benchmark",
+									UniqueKey: strings[(n+c)%len(strings)],
+									Limit:     10,
+									Duration:  guber.Second * 5,
+									Hits:      1,
+								},
+							},
+						})
+						if err != nil {
+							b.Errorf("client.RateLimit() err: %s", err)
+						}
+					}
+					wg.Done()
+				}()
+			}
+			wg.Wait()
+		})
+
+	}
+
 }
