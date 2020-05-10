@@ -22,7 +22,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mailgun/holster/v3/syncutil"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
@@ -106,122 +105,115 @@ func (s *Instance) Close() error {
 // rate limit `Name` and `UniqueKey` is not owned by this instance then we forward the request to the
 // peer that does.
 func (s *Instance) GetRateLimits(ctx context.Context, r *GetRateLimitsReq) (*GetRateLimitsResp, error) {
-	var resp GetRateLimitsResp
-
 	if len(r.Requests) > maxBatchSize {
 		return nil, status.Errorf(codes.OutOfRange,
 			"Requests.RateLimits list too large; max size is '%d'", maxBatchSize)
 	}
 
-	type InOut struct {
-		In  *RateLimitReq
-		Idx int
-		Out *RateLimitResp
+	ret := GetRateLimitsResp{
+		Responses: make([]*RateLimitResp, len(r.Requests)),
 	}
 
-	// Asynchronously fetch rate limits
-	out := make(chan InOut)
-	go func() {
-		fanOut := len(r.Requests)
-		if fanOut > 1000 {
-			fanOut = 1000
-		}
-
-		fan := syncutil.NewFanOut(fanOut)
-		// For each item in the request body
-		for i, item := range r.Requests {
-			fan.Run(func(data interface{}) error {
-				inOut := data.(InOut)
-
-				globalKey := inOut.In.Name + "_" + inOut.In.UniqueKey
-				var peer *PeerClient
-				var err error
-
-				if len(inOut.In.UniqueKey) == 0 {
-					inOut.Out = &RateLimitResp{Error: "field 'unique_key' cannot be empty"}
-					out <- inOut
-					return nil
-				}
-
-				if len(inOut.In.Name) == 0 {
-					inOut.Out = &RateLimitResp{Error: "field 'namespace' cannot be empty"}
-					out <- inOut
-					return nil
-				}
-
-				var attempts int
-			getPeer:
-				if attempts > 5 {
-					inOut.Out = &RateLimitResp{
-						Error: fmt.Sprintf("GetPeer() keeps returning peers that are in a closing state for '%s' - '%s'", globalKey, err),
-					}
-					out <- inOut
-					return nil
-				}
-
-				peer, err = s.GetPeer(globalKey)
-				if err != nil {
-					inOut.Out = &RateLimitResp{
-						Error: fmt.Sprintf("while finding peer that owns rate limit '%s' - '%s'", globalKey, err),
-					}
-					out <- inOut
-					return nil
-				}
-
-				// If our server instance is the owner of this rate limit
-				if peer.isOwner {
-					// Apply our rate limit algorithm to the request
-					inOut.Out, err = s.getRateLimit(inOut.In)
-					if err != nil {
-						inOut.Out = &RateLimitResp{
-							Error: fmt.Sprintf("while applying rate limit for '%s' - '%s'", globalKey, err),
-						}
-					}
-				} else {
-					if HasBehavior(inOut.In.Behavior, Behavior_GLOBAL) {
-						inOut.Out, err = s.getGlobalRateLimit(inOut.In)
-						if err != nil {
-							inOut.Out = &RateLimitResp{Error: err.Error()}
-						}
-
-						// Inform the client of the owner key of the key
-						inOut.Out.Metadata = map[string]string{"owner": peer.host}
-
-						out <- inOut
-						return nil
-					}
-
-					// Make an RPC call to the peer that owns this rate limit
-					inOut.Out, err = peer.GetPeerRateLimit(ctx, inOut.In)
-					if err != nil {
-						if err == ErrClosing {
-							attempts++
-							goto getPeer
-						}
-						inOut.Out = &RateLimitResp{
-							Error: fmt.Sprintf("while fetching rate limit '%s' from peer - '%s'", globalKey, err),
-						}
-					}
-
-					// Inform the client of the owner key of the key
-					inOut.Out.Metadata = map[string]string{"owner": peer.host}
-				}
-
-				out <- inOut
-				return nil
-			}, InOut{In: item, Idx: i})
-		}
-		fan.Wait()
-		close(out)
-	}()
-
-	resp.Responses = make([]*RateLimitResp, len(r.Requests))
-	// Collect the async responses as they return
-	for i := range out {
-		resp.Responses[i.Idx] = i.Out
+	// Avoid overhead of goroutines when handling a single request
+	if len(r.Requests) == 1 {
+		resp := s.getOneRateLimit(ctx, r.Requests[0])
+		ret.Responses[0] = &resp
+		return &ret, nil
 	}
 
-	return &resp, nil
+	wg := sync.WaitGroup{}
+	wg.Add(len(r.Requests))
+	for i := range r.Requests {
+		i := i
+		go func() {
+			resp := s.getOneRateLimit(ctx, r.Requests[i])
+			ret.Responses[i] = &resp
+			wg.Done()
+		}()
+	}
+
+	wg.Wait()
+
+	return &ret, nil
+}
+
+func (s *Instance) getOneRateLimit(ctx context.Context, req *RateLimitReq) RateLimitResp {
+	var peer *PeerClient
+	var err error
+	resp := RateLimitResp{}
+
+	if len(req.UniqueKey) == 0 {
+		resp.Error = "field 'unique_key' cannot be empty"
+		return resp
+	}
+
+	if len(req.Name) == 0 {
+		resp.Error = "field 'namespace' cannot be empty"
+		return resp
+	}
+
+	globalKey := req.HashKey()
+
+	for attempt := 0; attempt < 5; attempt++ {
+
+		peer, err = s.GetPeer(globalKey)
+		if err != nil {
+			resp.Error = fmt.Sprintf("while finding peer that owns rate limit '%s' - '%s'", globalKey, err)
+			return resp
+		}
+
+		// If our server instance is the owner of this rate limit
+		if peer.isOwner {
+			// Apply our rate limit algorithm to the request
+			r, err := s.getRateLimit(req)
+			if r != nil {
+				resp = *r
+			}
+
+			if err != nil {
+				resp.Error = fmt.Sprintf("while applying rate limit for '%s' - '%s'", globalKey, err)
+			}
+			return resp
+		}
+
+		if HasBehavior(req.Behavior, Behavior_GLOBAL) {
+			r, err := s.getGlobalRateLimit(req)
+			if r != nil {
+				resp = *r
+			}
+
+			if err != nil {
+				resp.Error = err.Error()
+			}
+
+			// Inform the client of the owner key of the key
+			resp.Metadata = map[string]string{"owner": peer.host}
+
+			return resp
+		}
+
+		// Make an RPC call to the peer that owns this rate limit
+		r, err := peer.GetPeerRateLimit(ctx, req)
+		resp = *r
+
+		if r != nil {
+			resp = *r
+		}
+
+		if err != nil {
+			if err == ErrClosing {
+				continue
+			}
+			resp.Error = fmt.Sprintf("while fetching rate limit '%s' from peer - '%s'", globalKey, err)
+		}
+
+		// Inform the client of the owner key of the key
+		resp.Metadata = map[string]string{"owner": peer.host}
+		return resp
+	}
+
+	resp.Error = fmt.Sprintf("GetPeer() keeps returning peers that are in a closing state for '%s' - '%s'", globalKey, err)
+	return resp
 }
 
 // getGlobalRateLimit handles rate limits that are marked as `Behavior = GLOBAL`. Rate limit responses
