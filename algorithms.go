@@ -21,10 +21,7 @@ import (
 )
 
 // Implements token bucket algorithm for rate limiting. https://en.wikipedia.org/wiki/Token_bucket
-func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err error) {
-	now := MillisecondNow()
-
-	key := r.HashKey()
+func tokenBucket(s Store, c Cache, r *RateLimitReq, key string, now int64) (resp *RateLimitResp, err error) {
 	item, ok := c.GetItem(key, now)
 	if s != nil {
 		if !ok {
@@ -61,7 +58,7 @@ func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 			if s != nil {
 				s.Remove(key)
 			}
-			return tokenBucket(s, c, r)
+			return tokenBucket(s, c, r, key, now)
 		}
 
 		if s != nil {
@@ -100,7 +97,7 @@ func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 				// Update this so s.OnChange() will get the new expire change
 				item.ExpireAt = expire
 				c.Remove(item.Key)
-				return tokenBucket(s, c, r)
+				return tokenBucket(s, c, r, key, now)
 			}
 			item.ExpireAt = expire
 			rl.ResetTime = expire
@@ -181,10 +178,7 @@ func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 }
 
 // Implements leaky bucket algorithm for rate limiting https://en.wikipedia.org/wiki/Leaky_bucket
-func leakyBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err error) {
-	now := MillisecondNow()
-	key := r.HashKey()
-
+func leakyBucket(s Store, c Cache, r *RateLimitReq, key string, now int64) (resp *RateLimitResp, err error) {
 	item, ok := c.GetItem(key, now)
 	if s != nil {
 		if !ok {
@@ -203,7 +197,7 @@ func leakyBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 			if s != nil {
 				s.Remove(key)
 			}
-			return leakyBucket(s, c, r)
+			return leakyBucket(s, c, r, key, now)
 		}
 
 		if HasBehavior(r.Behavior, Behavior_RESET_REMAINING) {

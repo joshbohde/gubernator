@@ -194,8 +194,6 @@ func (s *Instance) getOneRateLimit(ctx context.Context, req *RateLimitReq) RateL
 
 		// Make an RPC call to the peer that owns this rate limit
 		r, err := peer.GetPeerRateLimit(ctx, req)
-		resp = *r
-
 		if r != nil {
 			resp = *r
 		}
@@ -222,8 +220,12 @@ func (s *Instance) getGlobalRateLimit(req *RateLimitReq) (*RateLimitResp, error)
 	// Queue the hit for async update
 	s.global.QueueHit(req)
 
-	item, ok := s.conf.Cache.GetItem(req.HashKey(), MillisecondNow())
+	key := req.HashKey()
+	now := MillisecondNow()
 
+	s.conf.Cache.Lock()
+	item, ok := s.conf.Cache.GetItem(key, now)
+	s.conf.Cache.Unlock()
 	if ok {
 		// Global rate limits are always stored as RateLimitResp regardless of algorithm
 		rl, ok := item.Value.(*RateLimitResp)
@@ -243,6 +245,9 @@ func (s *Instance) getGlobalRateLimit(req *RateLimitReq) (*RateLimitResp, error)
 // UpdatePeerGlobals updates the local cache with a list of global rate limits. This method should only
 // be called by a peer who is the owner of a global rate limit.
 func (s *Instance) UpdatePeerGlobals(ctx context.Context, r *UpdatePeerGlobalsReq) (*UpdatePeerGlobalsResp, error) {
+	s.conf.Cache.Lock()
+	defer s.conf.Cache.Unlock()
+
 	for _, g := range r.Globals {
 		s.conf.Cache.Add(&CacheItem{
 			ExpireAt:  g.Status.ResetTime,
@@ -288,11 +293,17 @@ func (s *Instance) getRateLimit(r *RateLimitReq) (*RateLimitResp, error) {
 		s.global.QueueUpdate(r)
 	}
 
+	key := r.HashKey()
+	now := MillisecondNow()
+
+	s.conf.Cache.Lock()
+	defer s.conf.Cache.Unlock()
+
 	switch r.Algorithm {
 	case Algorithm_TOKEN_BUCKET:
-		return tokenBucket(s.conf.Store, s.conf.Cache, r)
+		return tokenBucket(s.conf.Store, s.conf.Cache, r, key, now)
 	case Algorithm_LEAKY_BUCKET:
-		return leakyBucket(s.conf.Store, s.conf.Cache, r)
+		return leakyBucket(s.conf.Store, s.conf.Cache, r, key, now)
 	}
 	return nil, errors.Errorf("invalid rate limit algorithm '%d'", r.Algorithm)
 }
