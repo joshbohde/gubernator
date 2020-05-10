@@ -22,8 +22,10 @@ import (
 
 // Implements token bucket algorithm for rate limiting. https://en.wikipedia.org/wiki/Token_bucket
 func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err error) {
+	now := MillisecondNow()
+
 	key := r.HashKey()
-	item, ok := c.GetItem(key)
+	item, ok := c.GetItem(key, now)
 	if s != nil {
 		if !ok {
 			// Check our store for the item
@@ -94,7 +96,7 @@ func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 				}
 			}
 			// If our new duration means we are currently expired
-			if expire < MillisecondNow() {
+			if expire < now {
 				// Update this so s.OnChange() will get the new expire change
 				item.ExpireAt = expire
 				c.Remove(item.Key)
@@ -135,7 +137,6 @@ func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 	}
 
 	// Add a new rate limit to the cache
-	now := MillisecondNow()
 	expire := now + r.Duration
 	if HasBehavior(r.Behavior, Behavior_DURATION_IS_GREGORIAN) {
 		expire, err = GregorianExpiration(time.Now(), r.Duration)
@@ -183,7 +184,8 @@ func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 func leakyBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err error) {
 	now := MillisecondNow()
 	key := r.HashKey()
-	item, ok := c.GetItem(key)
+
+	item, ok := c.GetItem(key, now)
 	if s != nil {
 		if !ok {
 			// Check our store for the item

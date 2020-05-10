@@ -33,13 +33,9 @@ type Cache interface {
 	// Access methods
 	Add(*CacheItem) bool
 	UpdateExpiration(key string, expireAt int64) bool
-	GetItem(key string) (value *CacheItem, ok bool)
+	GetItem(key string, now int64) (value *CacheItem, ok bool)
 	Each() chan *CacheItem
 	Remove(key string)
-
-	// If the cache is exclusive, this will control access to the cache
-	Unlock()
-	Lock()
 }
 
 // Holds stats collected about the cache
@@ -105,9 +101,12 @@ func (c *LRUCache) Each() chan *CacheItem {
 	out := make(chan *CacheItem)
 	fmt.Printf("Each size: %d\n", len(c.cache))
 	go func() {
+		c.Lock()
+
 		for _, ele := range c.cache {
 			out <- ele.Value.(*CacheItem)
 		}
+		c.Unlock()
 		close(out)
 	}()
 	return out
@@ -115,9 +114,13 @@ func (c *LRUCache) Each() chan *CacheItem {
 
 // Adds a value to the cache.
 func (c *LRUCache) Add(record *CacheItem) bool {
+	c.Lock()
+
 	// If the key already exist, set the new value
 	if ee, ok := c.cache[record.Key]; ok {
 		c.ll.MoveToFront(ee)
+		c.Unlock()
+
 		temp := ee.Value.(*CacheItem)
 		*temp = *record
 		return true
@@ -128,6 +131,8 @@ func (c *LRUCache) Add(record *CacheItem) bool {
 	if c.cacheSize != 0 && c.ll.Len() > c.cacheSize {
 		c.removeOldest()
 	}
+	c.Unlock()
+
 	return false
 }
 
@@ -137,16 +142,17 @@ func MillisecondNow() int64 {
 }
 
 // GetItem returns the item stored in the cache
-func (c *LRUCache) GetItem(key string) (item *CacheItem, ok bool) {
+func (c *LRUCache) GetItem(key string, now int64) (item *CacheItem, ok bool) {
+	c.Lock()
 
 	if ele, hit := c.cache[key]; hit {
 		entry := ele.Value.(*CacheItem)
 
-		now := MillisecondNow()
 		// If the entry is invalidated
 		if entry.InvalidAt != 0 && entry.InvalidAt < now {
 			c.removeElement(ele)
 			c.stats.Miss++
+			c.Unlock()
 			return
 		}
 
@@ -154,21 +160,30 @@ func (c *LRUCache) GetItem(key string) (item *CacheItem, ok bool) {
 		if entry.ExpireAt < now {
 			c.removeElement(ele)
 			c.stats.Miss++
+			c.Unlock()
+
 			return
 		}
 		c.stats.Hit++
 		c.ll.MoveToFront(ele)
+		c.Unlock()
+
 		return entry, true
 	}
 	c.stats.Miss++
+	c.Unlock()
+
 	return
 }
 
 // Remove removes the provided key from the cache.
 func (c *LRUCache) Remove(key string) {
+	c.Lock()
+
 	if ele, hit := c.cache[key]; hit {
 		c.removeElement(ele)
 	}
+	c.Unlock()
 }
 
 // RemoveOldest removes the oldest item from the cache.
@@ -187,20 +202,34 @@ func (c *LRUCache) removeElement(e *list.Element) {
 
 // Len returns the number of items in the cache.
 func (c *LRUCache) Size() int {
+	c.Lock()
+	defer c.Unlock()
+
 	return c.ll.Len()
 }
 
 func (c *LRUCache) Stats(_ bool) cachStats {
+	c.Lock()
+	defer c.Unlock()
+
 	return c.stats
 }
 
 // Update the expiration time for the key
 func (c *LRUCache) UpdateExpiration(key string, expireAt int64) bool {
+	c.Lock()
+
 	if ele, hit := c.cache[key]; hit {
 		entry := ele.Value.(*CacheItem)
 		entry.ExpireAt = expireAt
+
+		c.Unlock()
+
 		return true
 	}
+
+	c.Unlock()
+
 	return false
 }
 

@@ -222,9 +222,8 @@ func (s *Instance) getGlobalRateLimit(req *RateLimitReq) (*RateLimitResp, error)
 	// Queue the hit for async update
 	s.global.QueueHit(req)
 
-	s.conf.Cache.Lock()
-	item, ok := s.conf.Cache.GetItem(req.HashKey())
-	s.conf.Cache.Unlock()
+	item, ok := s.conf.Cache.GetItem(req.HashKey(), MillisecondNow())
+
 	if ok {
 		// Global rate limits are always stored as RateLimitResp regardless of algorithm
 		rl, ok := item.Value.(*RateLimitResp)
@@ -244,9 +243,6 @@ func (s *Instance) getGlobalRateLimit(req *RateLimitReq) (*RateLimitResp, error)
 // UpdatePeerGlobals updates the local cache with a list of global rate limits. This method should only
 // be called by a peer who is the owner of a global rate limit.
 func (s *Instance) UpdatePeerGlobals(ctx context.Context, r *UpdatePeerGlobalsReq) (*UpdatePeerGlobalsResp, error) {
-	s.conf.Cache.Lock()
-	defer s.conf.Cache.Unlock()
-
 	for _, g := range r.Globals {
 		s.conf.Cache.Add(&CacheItem{
 			ExpireAt:  g.Status.ResetTime,
@@ -288,9 +284,6 @@ func (s *Instance) HealthCheck(ctx context.Context, r *HealthCheckReq) (*HealthC
 }
 
 func (s *Instance) getRateLimit(r *RateLimitReq) (*RateLimitResp, error) {
-	s.conf.Cache.Lock()
-	defer s.conf.Cache.Unlock()
-
 	if HasBehavior(r.Behavior, Behavior_GLOBAL) {
 		s.global.QueueUpdate(r)
 	}
