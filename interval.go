@@ -20,14 +20,11 @@ import (
 	"errors"
 	"sync"
 	"time"
-
-	"github.com/mailgun/holster/v3/syncutil"
 )
 
 type Interval struct {
 	C  chan struct{}
 	in chan struct{}
-	wg syncutil.WaitGroup
 
 	mu        sync.Mutex
 	lastReset time.Time
@@ -66,20 +63,18 @@ func (i *Interval) sleepUntilTime(d time.Duration) {
 }
 
 func (i *Interval) run(d time.Duration) {
-	i.wg.Until(func(done chan struct{}) bool {
-		select {
-		case <-i.in:
-			i.sleepUntilTime(d)
-			i.C <- struct{}{}
-			return true
-		case <-done:
-			return false
+	for {
+		_, ok := <-i.in
+		if !ok {
+			return
 		}
-	})
+		i.sleepUntilTime(d)
+		i.C <- struct{}{}
+	}
 }
 
 func (i *Interval) Stop() {
-	i.wg.Stop()
+	close(i.in)
 }
 
 // Reset signals that the interval this was tracking was externally reset.
