@@ -40,10 +40,11 @@ type PeerClient struct {
 	client  PeersV1Client
 	conn    *grpc.ClientConn
 	conf    BehaviorConfig
-	queue   chan *request
 	host    string
 	isOwner bool // true if this peer refers to this server instance
 
+	queue     Queue
+	interval  Interval
 	mutex     sync.RWMutex // This mutex is for verifying the closing state of the client
 	isClosing bool
 	wg        sync.WaitGroup // This wait group is to monitor the number of in-flight requests
@@ -56,14 +57,27 @@ type response struct {
 
 type request struct {
 	request *RateLimitReq
-	resp    chan *response
+	resp    response
+}
+
+type requestBatch struct {
+	requests []*request
+	done     chan struct{}
+}
+
+func (r requestBatch) Copy() requestBatch {
+	reqs := make([]*request, len(r.requests))
+	copy(reqs, r.requests)
+	r.requests = reqs
+	return r
 }
 
 func NewPeerClient(conf BehaviorConfig, host string) (*PeerClient, error) {
 	c := &PeerClient{
-		queue: make(chan *request, 1000),
-		host:  host,
-		conf:  conf,
+		queue:    NewQueue(conf.BatchLimit),
+		host:     host,
+		conf:     conf,
+		interval: *NewInterval(conf.BatchWait),
 	}
 
 	if err := c.dialPeer(); err != nil {
@@ -132,31 +146,31 @@ func (c *PeerClient) UpdatePeerGlobals(ctx context.Context, r *UpdatePeerGlobals
 }
 
 func (c *PeerClient) getPeerRateLimitsBatch(ctx context.Context, r *RateLimitReq) (*RateLimitResp, error) {
+	req := request{request: r}
+
 	c.mutex.RLock()
 	if c.isClosing {
 		c.mutex.RUnlock()
 		return nil, ErrClosing
 	}
 
-	req := request{request: r, resp: make(chan *response, 1)}
-
-	// Enqueue the request to be sent
-	c.queue <- &req
+	c.wg.Add(1)
 
 	// Unlock to prevent the chan from being closed
 	c.mutex.RUnlock()
 
-	c.wg.Add(1)
-	defer c.wg.Done()
+	c.interval.Next()
 
-	// Wait for a response or context cancel
+	c.queue.Lock()
+	done := c.queue.Enqueue(&req)
+	c.queue.Unlock()
+
 	select {
-	case resp := <-req.resp:
-		if resp.err != nil {
-			return nil, resp.err
-		}
-		return resp.rl, nil
+	case <-done:
+		c.wg.Done()
+		return req.resp.rl, req.resp.err
 	case <-ctx.Done():
+		c.wg.Done()
 		return nil, ctx.Err()
 	}
 }
@@ -176,40 +190,24 @@ func (c *PeerClient) dialPeer() error {
 // run waits for requests to be queued, when either c.batchWait time
 // has elapsed or the queue reaches c.batchLimit. Send what is in the queue.
 func (c *PeerClient) run() {
-	var interval = NewInterval(c.conf.BatchWait)
-	defer interval.Stop()
-
-	var queue []*request
+	defer c.interval.Stop()
 
 	for {
 		select {
-		case r, ok := <-c.queue:
-			// If the queue has shutdown, we need to send the rest of the queue
+		case batch, ok := <-c.queue.Batch:
+			c.interval.Reset()
 			if !ok {
-				if len(queue) > 0 {
-					c.sendQueue(queue)
-				}
 				return
 			}
+			go c.sendQueue(batch.Copy())
 
-			queue = append(queue, r)
+		case <-c.interval.C:
+			c.queue.Lock()
+			batch, ok := c.queue.Get()
+			c.queue.Unlock()
 
-			// Send the queue if we reached our batch limit
-			if len(queue) == c.conf.BatchLimit {
-				go c.sendQueue(queue)
-				queue = nil
-				interval.Reset()
-				continue
-			}
-
-			if len(queue) == 1 {
-				interval.Next()
-			}
-
-		case <-interval.C:
-			if len(queue) != 0 {
-				go c.sendQueue(queue)
-				queue = nil
+			if ok {
+				go c.sendQueue(batch.Copy())
 			}
 
 		}
@@ -218,7 +216,10 @@ func (c *PeerClient) run() {
 
 // sendQueue sends the queue provided and returns the responses to
 // waiting go routines
-func (c *PeerClient) sendQueue(queue []*request) {
+func (c *PeerClient) sendQueue(batch requestBatch) {
+	queue := batch.requests
+	defer close(batch.done)
+
 	req := GetPeerRateLimitsReq{
 		Requests: make([]*RateLimitReq, len(queue)),
 	}
@@ -234,7 +235,7 @@ func (c *PeerClient) sendQueue(queue []*request) {
 	// An error here indicates the entire request failed
 	if err != nil {
 		for _, r := range queue {
-			r.resp <- &response{err: err}
+			r.resp.err = err
 		}
 		return
 	}
@@ -243,14 +244,14 @@ func (c *PeerClient) sendQueue(queue []*request) {
 	if len(resp.RateLimits) != len(queue) {
 		err = errors.New("server responded with incorrect rate limit list size")
 		for _, r := range queue {
-			r.resp <- &response{err: err}
+			r.resp.err = err
 		}
 		return
 	}
 
 	// Provide responses to channels waiting in the queue
 	for i, r := range queue {
-		r.resp <- &response{rl: resp.RateLimits[i]}
+		r.resp.rl = resp.RateLimits[i]
 	}
 }
 
@@ -264,8 +265,9 @@ func (c *PeerClient) Shutdown(ctx context.Context) error {
 	}
 
 	c.isClosing = true
+
 	// We need to close the chan here to prevent a possible race
-	close(c.queue)
+	c.queue.Close()
 
 	c.mutex.Unlock()
 
