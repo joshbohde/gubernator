@@ -113,9 +113,10 @@ func (c *PeerClient) GetPeerRateLimits(ctx context.Context, r *GetPeerRateLimits
 		c.mutex.RUnlock()
 		return nil, ErrClosing
 	}
-	c.mutex.RUnlock()
 
 	c.wg.Add(1)
+	c.mutex.RUnlock()
+
 	defer c.wg.Done()
 
 	resp, err := c.client.GetPeerRateLimits(ctx, r)
